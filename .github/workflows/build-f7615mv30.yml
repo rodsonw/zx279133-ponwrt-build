@@ -132,7 +132,7 @@ jobs:
 
       - name: Diagnose compat package
         working-directory: openwrt
-        run: make package/kernel/zwrt-npu-compat compile V=s
+        run: make package/kernel/zwrt-npu-compat/compile V=s
       - name: Download packages
         working-directory: openwrt
         run: make download -j8 || make download -j1
