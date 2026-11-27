@@ -47,6 +47,22 @@ jobs:
       - name: Apply the repo board layer
         run: sh tools/apply-sk-overlay-73.sh "$KERNEL_TREE"
 
+      - name: Add ZWRT npu symbol stubs to kernel
+        run: |
+          cat >> "$KERNEL_TREE/net/netfilter/nf_flow_table_core.c" <<"EOF"
+          unsigned long nf_flow_sqm_ctl_cmd(unsigned long a, unsigned long b, unsigned long c, unsigned long d, unsigned long e, unsigned long f, unsigned long g, unsigned long h) { return 0; }
+          EXPORT_SYMBOL_GPL(nf_flow_sqm_ctl_cmd);
+          unsigned long nf_flow_sqm_fill_mac_snap(unsigned long a, unsigned long b, unsigned long c, unsigned long d, unsigned long e, unsigned long f, unsigned long g, unsigned long h) { return 0; }
+          EXPORT_SYMBOL_GPL(nf_flow_sqm_fill_mac_snap);
+          unsigned long nf_flow_sqm_fill_snap(unsigned long a, unsigned long b, unsigned long c, unsigned long d, unsigned long e, unsigned long f, unsigned long g, unsigned long h) { return 0; }
+          EXPORT_SYMBOL_GPL(nf_flow_sqm_fill_snap);
+          unsigned long nf_flow_sqm_set_hw_ops(unsigned long a, unsigned long b, unsigned long c, unsigned long d, unsigned long e, unsigned long f, unsigned long g, unsigned long h) { return 0; }
+          EXPORT_SYMBOL_GPL(nf_flow_sqm_set_hw_ops);
+          unsigned long nf_flow_sqm_set_proc_hidden(unsigned long a, unsigned long b, unsigned long c, unsigned long d, unsigned long e, unsigned long f, unsigned long g, unsigned long h) { return 0; }
+          EXPORT_SYMBOL_GPL(nf_flow_sqm_set_proc_hidden);
+          unsigned long nf_flow_table_hw_resync(unsigned long a, unsigned long b, unsigned long c, unsigned long d, unsigned long e, unsigned long f, unsigned long g, unsigned long h) { return 0; }
+          EXPORT_SYMBOL_GPL(nf_flow_table_hw_resync);
+          EOF
       - name: Install the F7615MV30 DTB into the kernel tree
         run: |
           K="$KERNEL_TREE/arch/arm64/boot/dts/zte"
@@ -61,46 +77,13 @@ jobs:
           cp -a overlays/. openwrt/
           cp -a overlays-73/. openwrt/
 
-      - name: Add the prebuilt ZWRT NPU driver and compat shim
+      - name: Install prebuilt NPU module into base-files
         run: |
-          set -eu
-          # Keep the public kmod-npu out of the image: our extracted npu.ko
-          # is the combined driver that actually binds direct-ge-ports.
-          mkdir -p openwrt/package/kernel/zwrt-npu-compat/src
-          cp extracted_npu.ko openwrt/package/kernel/zwrt-npu-compat/src/npu.ko
-          cp npu-compat.c openwrt/package/kernel/zwrt-npu-compat/src/npu-compat.c
-          cat > openwrt/package/kernel/zwrt-npu-compat/src/Makefile <<'EOF'
-          obj-m := npu-compat.o
-          EOF
-          cat > openwrt/package/kernel/zwrt-npu-compat/Makefile <<'EOF'
-          include $(TOPDIR)/rules.mk
-          include $(INCLUDE_DIR)/kernel.mk
-          PKG_NAME:=zwrt-npu-compat
-          PKG_VERSION:=1.0
-          PKG_RELEASE:=1
-          include $(INCLUDE_DIR)/package.mk
-          define KernelPackage/zwrt-npu-compat
-            SUBSYSTEM:=drivers
-            TITLE:=ZWRT npu.ko and symbol compatibility shim
-            DEPENDS:=@TARGET_zte
-            FILES:=$(PKG_BUILD_DIR)/npu.ko $(PKG_BUILD_DIR)/npu-compat.ko
-            AUTOLOAD:=$(call AutoLoad,29,npu-compat npu,1)
-          endef
-          define Build/Prepare
-          \tmkdir -p $(PKG_BUILD_DIR)
-          \t$(CP) ./src/* $(PKG_BUILD_DIR)/
-          endef
-          define Build/Compile
-          \t$(MAKE) -C "$(LINUX_DIR)" $(KERNEL_MAKE_FLAGS) M="$(PKG_BUILD_DIR)" modules
-          endef
-          $(eval $(call KernelPackage,zwrt-npu-compat))
-          EOF
-          python3 - <<"PY"
-          p = "openwrt/package/kernel/zwrt-npu-compat/Makefile"
-          s = open(p).read().replace("\\t", chr(9))
-          open(p, "w").write(s)
-          PY
-
+          mkdir -p openwrt/target/linux/zte/zx279133/base-files/lib/modules/7.3.4
+          cp extracted_npu.ko openwrt/target/linux/zte/zx279133/base-files/lib/modules/7.3.4/npu.ko
+          mkdir -p openwrt/target/linux/zte/zx279133/base-files/etc/modules.d
+          printf 'npu
+' > openwrt/target/linux/zte/zx279133/base-files/etc/modules.d/30-zte-npu
       - name: Adjust SK-D840N theme pins for this board
         run: |
           sh scripts/prepare-sk-d840n-ui.sh "$GITHUB_WORKSPACE/openwrt"
@@ -124,7 +107,6 @@ jobs:
           sh scripts/configure-sk-d840n.sh \
             "$GITHUB_WORKSPACE/openwrt" "$KERNEL_TREE" initramfs
           cat >> openwrt/.config <<'EOF'
-          CONFIG_PACKAGE_kmod-zwrt-npu-compat=y
           # CONFIG_MODVERSIONS is not set
           # CONFIG_MODULE_SIG_FORCE is not set
           EOF
@@ -134,11 +116,6 @@ jobs:
         working-directory: openwrt
         run: make download -j8 || make download -j1
 
-      - name: Diagnose compat package
-        working-directory: openwrt
-        run: |
-          make -j"$(nproc)" tools/compile
-          make package/kernel/zwrt-npu-compat/compile V=s
       - name: Compile
         working-directory: openwrt
         run: |
