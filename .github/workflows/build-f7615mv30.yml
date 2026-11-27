@@ -29,6 +29,13 @@ jobs:
         run: |
           git clone --depth 1 -b "$IW_BRANCH" "$IW_URL" openwrt
 
+      - name: Install feeds
+        working-directory: openwrt
+        env:
+          GIT_TERMINAL_PROMPT: 0
+        run: |
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
       - name: Prepare the pinned Linux 7.3.4 tree
         run: |
           python3 tools/prepare-sk-kernel-73.py \
