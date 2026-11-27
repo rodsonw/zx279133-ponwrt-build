@@ -83,6 +83,9 @@ jobs:
           cp extracted_npu.ko openwrt/target/linux/zte/zx279133/base-files/lib/modules/7.3.4/npu.ko
           mkdir -p openwrt/target/linux/zte/zx279133/base-files/etc/modules.d
           printf 'npu\n' > openwrt/target/linux/zte/zx279133/base-files/etc/modules.d/30-zte-npu
+      - name: Disable linux-atm package
+        run: |
+          printf '# disabled for F7615MV30' > openwrt/package/network/utils/linux-atm/Makefile
       - name: Adjust SK-D840N theme pins for this board
         run: |
           sh scripts/prepare-sk-d840n-ui.sh "$GITHUB_WORKSPACE/openwrt"
