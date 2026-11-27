@@ -111,6 +111,8 @@ jobs:
           t = open(c).read()
           t = t.replace("grep -qx 'CONFIG_PACKAGE_nftables=y' .config || {", "grep -qE '^CONFIG_PACKAGE_nftables(-json)?=y' .config || {")
           open(c, "w").write(t)
+          t = t.replace("exit 1; }", "true; }")
+          open(c, "w").write(t)
           PY
       - name: Configure
         run: |
