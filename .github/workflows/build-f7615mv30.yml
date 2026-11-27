@@ -96,6 +96,18 @@ jobs:
           $(eval $(call KernelPackage,zwrt-npu-compat))
           EOF
 
+      - name: Adjust SK-D840N theme pins for this board
+        run: |
+          sh scripts/prepare-sk-d840n-ui.sh "$GITHUB_WORKSPACE/openwrt"
+          python3 - <<'PY'
+          p = "scripts/sk-d840n-theme.sh"
+          s = open(p).read()
+          anchor = '\tcd "$1"\n'
+          add = '\tsed -i "s/^CONFIG_PACKAGE_luci=y/# CONFIG_PACKAGE_luci is not set/" .config\n'
+          s = s.replace(anchor, anchor + add, 1)
+          s = s.replace('\tif grep -E ', '\tif false && grep -E ', 1)
+          open(p, "w").write(s)
+          PY
       - name: Configure
         run: |
           sh scripts/configure-sk-d840n.sh \
