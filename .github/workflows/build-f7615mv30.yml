@@ -98,8 +98,6 @@ jobs:
           t = open(c).read()
           t = t.replace("grep -qx 'CONFIG_PACKAGE_nftables=y' .config || {", "grep -qE '^CONFIG_PACKAGE_nftables(-json)?=y' .config || {")
           open(c, "w").write(t)
-          for n in ['libzxpon-omci', 'zxpond', 'luci-app-sk-d840n-pon', 'sk-layout-check', 'zrec']:
-              t = t.replace("CONFIG_PACKAGE_" + n + "=y", "# CONFIG_PACKAGE_" + n + " is not set")
           t = t.replace("exit 1; }", "true; }")
           open(c, "w").write(t)
           PY
@@ -112,6 +110,10 @@ jobs:
           # CONFIG_MODULE_SIG_FORCE is not set
           EOF
           cd openwrt && make defconfig
+          cd openwrt
+          for n in libzxpon-omci zxpond luci-app-sk-d840n-pon sk-layout-check zrec; do
+            sed -i "s/^CONFIG_PACKAGE_$n=y/# CONFIG_PACKAGE_$n is not set/" .config
+          done
 
       - name: Download packages
         working-directory: openwrt
