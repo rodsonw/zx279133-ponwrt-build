@@ -111,7 +111,7 @@ jobs:
           EOF
           cd openwrt && make defconfig
           for n in libzxpon-omci zxpond luci-app-sk-d840n-pon sk-layout-check zrec linux-atm; do
-            sed -i "s/^CONFIG_PACKAGE_$n=y/# CONFIG_PACKAGE_$n is not set/" .config
+            sed -i "/^CONFIG_PACKAGE_$n=/d" .config
           done
 
       - name: Download packages
