@@ -28,6 +28,8 @@ jobs:
       - name: Clone ImmortalWrt
         run: |
           git clone --depth 1 -b "$IW_BRANCH" "$IW_URL" openwrt
+          git -C openwrt fetch --depth 1 origin 31e2ac4ded9c8896c7aefd3dcb9a46ef77440fbd
+          git -C openwrt checkout --detach 31e2ac4ded9c8896c7aefd3dcb9a46ef77440fbd
 
       - name: Install feeds
         working-directory: openwrt
