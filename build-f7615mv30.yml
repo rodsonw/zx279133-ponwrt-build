@@ -1,0 +1,120 @@
+name: F7615MV30 source build (Linux 7.3.4)
+
+# Experimental: reuse this repository's pinned Linux 7.3.4 + cnjn patch
+# pipeline, but boot the F7615MV30 DTB and the prebuilt ZWRT npu.ko that
+# carries the direct-ge / sg351 LAN driver.
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      KERNEL_TREE: ${{ github.workspace }}/linux-7.3.4
+      KVER: 7.3.4
+      IW_URL: https://github.com/cnjn/immortalwrt.git
+      IW_BRANCH: master
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential clang flex bison gawk \
+            gettext git libncurses-dev libssl-dev python3 python3-setuptools \
+            rsync swig unzip zlib1g-dev file wget cpio xz-utils
+
+      - name: Clone ImmortalWrt
+        run: |
+          git clone --depth 1 -b "$IW_BRANCH" "$IW_URL" openwrt
+
+      - name: Prepare the pinned Linux 7.3.4 tree
+        run: |
+          python3 tools/prepare-sk-kernel-73.py \
+            --tree "$KERNEL_TREE" \
+            --version "$KVER" \
+            --openwrt "$GITHUB_WORKSPACE/openwrt" \
+            --report kernel-provenance.json
+
+      - name: Apply the repo board layer
+        run: sh tools/apply-sk-overlay-73.sh "$KERNEL_TREE"
+
+      - name: Install the F7615MV30 DTB into the kernel tree
+        run: |
+          K="$KERNEL_TREE/arch/arm64/boot/dts/zte"
+          # The config script and image Makefile refer to the sk-d840n DTB;
+          # replace its source with our board so the generated FIT carries
+          # the F7615MV30 compatible/model and partition layout.
+          cp f7615mv3.dts "$K/zx279133-sk-d840n.dts"
+          grep -n 'zx279133-sk-d840n.dtb' "$K/Makefile"
+
+      - name: Apply OpenWrt-side overlays
+        run: |
+          cp -a overlays/. openwrt/
+          cp -a overlays-73/. openwrt/
+
+      - name: Add the prebuilt ZWRT NPU driver and compat shim
+        run: |
+          set -eu
+          # Keep the public kmod-npu out of the image: our extracted npu.ko
+          # is the combined driver that actually binds direct-ge-ports.
+          mkdir -p openwrt/package/kernel/zwrt-npu-compat/src
+          cp extracted_npu.ko openwrt/package/kernel/zwrt-npu-compat/src/npu.ko
+          cp npu-compat.c openwrt/package/kernel/zwrt-npu-compat/src/npu-compat.c
+          cat > openwrt/package/kernel/zwrt-npu-compat/src/Makefile <<'EOF'
+          obj-m := npu-compat.o
+          EOF
+          cat > openwrt/package/kernel/zwrt-npu-compat/Makefile <<'EOF'
+          include $(TOPDIR)/rules.mk
+          include $(INCLUDE_DIR)/kernel.mk
+          PKG_NAME:=zwrt-npu-compat
+          PKG_VERSION:=1.0
+          PKG_RELEASE:=1
+          include $(INCLUDE_DIR)/package.mk
+          define KernelPackage/zwrt-npu-compat
+            SUBSYSTEM:=drivers
+            TITLE:=ZWRT npu.ko and symbol compatibility shim
+            DEPENDS:=@TARGET_zte
+            FILES:=$(PKG_BUILD_DIR)/npu.ko $(PKG_BUILD_DIR)/npu-compat.ko
+            AUTOLOAD:=$(call AutoLoad,29,npu-compat npu,1)
+          endef
+          define Build/Prepare
+          \tmkdir -p $(PKG_BUILD_DIR)
+          \t$(CP) ./src/* $(PKG_BUILD_DIR)/
+          endef
+          define Build/Compile
+          \t$(MAKE) -C "$(LINUX_DIR)" $(KERNEL_MAKE_FLAGS) M="$(PKG_BUILD_DIR)" modules
+          endef
+          $(eval $(call KernelPackage,zwrt-npu-compat))
+          EOF
+
+      - name: Configure
+        run: |
+          sh scripts/configure-sk-d840n.sh \
+            "$GITHUB_WORKSPACE/openwrt" "$KERNEL_TREE" initramfs
+          cat >> openwrt/.config <<'EOF'
+          CONFIG_PACKAGE_kmod-zwrt-npu-compat=y
+          # CONFIG_MODVERSIONS is not set
+          # CONFIG_MODULE_SIG_FORCE is not set
+          EOF
+          cd openwrt && make defconfig
+
+      - name: Download packages
+        working-directory: openwrt
+        run: make download -j8 || make download -j1
+
+      - name: Compile
+        working-directory: openwrt
+        run: |
+          set -o pipefail
+          make -j"$(nproc)" 2>&1 | tee ../f7615-compile.log
+
+      - name: Upload images
+        uses: actions/upload-artifact@v4
+        with:
+          name: f7615mv30-images
+          path: |
+            openwrt/bin/targets/zte/zx279133/*.itb
+            openwrt/bin/targets/zte/zx279133/*.bin
+          if-no-files-found: warn
