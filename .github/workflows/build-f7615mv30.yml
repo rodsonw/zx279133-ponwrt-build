@@ -130,13 +130,15 @@ jobs:
           EOF
           cd openwrt && make defconfig
 
-      - name: Diagnose compat package
-        working-directory: openwrt
-        run: make package/kernel/zwrt-npu-compat/compile V=s
       - name: Download packages
         working-directory: openwrt
         run: make download -j8 || make download -j1
 
+      - name: Diagnose compat package
+        working-directory: openwrt
+        run: |
+          make -j"$(nproc)" tools/compile
+          make package/kernel/zwrt-npu-compat/compile V=s
       - name: Compile
         working-directory: openwrt
         run: |
