@@ -109,6 +109,10 @@ jobs:
           s = s.replace(anchor, anchor + add, 1)
           s = s.replace('\tif grep -E ', '\tif false && grep -E ', 1)
           open(p, "w").write(s)
+          c = "scripts/configure-sk-d840n.sh"
+          t = open(c).read()
+          t = t.replace("grep -qx 'CONFIG_PACKAGE_nftables=y' .config || {", "grep -qE '^CONFIG_PACKAGE_nftables(-json)?=y' .config || {")
+          open(c, "w").write(t)
           PY
       - name: Configure
         run: |
