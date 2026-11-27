@@ -103,6 +103,7 @@ jobs:
           PY
       - name: Configure
         run: |
+          sed -i '/linux-atm/d' openwrt/configs/zte_zx279133_sr1010_initramfs.config
           sh scripts/configure-sk-d840n.sh \
             "$GITHUB_WORKSPACE/openwrt" "$KERNEL_TREE" initramfs
           cat >> openwrt/.config <<'EOF'
