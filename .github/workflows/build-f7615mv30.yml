@@ -95,6 +95,11 @@ jobs:
           endef
           $(eval $(call KernelPackage,zwrt-npu-compat))
           EOF
+          python3 - <<"PY"
+          p = "openwrt/package/kernel/zwrt-npu-compat/Makefile"
+          s = open(p).read().replace("\\t", chr(9))
+          open(p, "w").write(s)
+          PY
 
       - name: Adjust SK-D840N theme pins for this board
         run: |
