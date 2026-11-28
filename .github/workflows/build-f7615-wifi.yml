@@ -48,6 +48,8 @@ jobs:
       - name: Add OpenWrt device profile and kernel config
         run: |
           cp wifi-openwrt-board.dts openwrt/target/linux/zte/dts/
+          cp overlays-73/target/linux/zte/Makefile openwrt/target/linux/zte/Makefile
+          cp overlays-73/target/linux/zte/zx279133/target.mk openwrt/target/linux/zte/zx279133/target.mk
           patch -d openwrt -p1 < wifi-image-Makefile.patch
           python3 - <<'PY'
           p = "openwrt/target/linux/zte/zx279133/config-7.3"
