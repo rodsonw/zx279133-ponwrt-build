@@ -73,6 +73,8 @@ jobs:
           echo 'CONFIG_TARGET_zte_zx279133_DEVICE_zte_zxhn-f7615mv30=y' >> openwrt/.config
           echo '# CONFIG_TARGET_zte_zx279133_DEVICE_zte_zxslc-sr1010 is not set' >> openwrt/.config
           printf 'CONFIG_EXTERNAL_KERNEL_TREE="%s"\n' "$KERNEL_TREE" >> openwrt/.config
+          rm -rf openwrt/package/network/utils/linux-atm
+          echo '# CONFIG_PACKAGE_linux-atm is not set' >> openwrt/.config
           cd openwrt && make defconfig
 
       - name: Download packages
