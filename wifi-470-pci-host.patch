@@ -336,7 +336,7 @@ diff --git a/drivers/pci/controller/dwc/pcie-zx279133.c b/drivers/pci/controller
 new file mode 100644
 --- /dev/null
 +++ b/drivers/pci/controller/dwc/pcie-zx279133.c
-@@ -0,0 +1,197 @@
+@@ -0,0 +1,208 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * PCIe host controller driver for the ZTE ZX279133 (ZXIC) SoC.
@@ -393,7 +393,7 @@ new file mode 100644
 +	return container_of(pci, struct zx279133_pcie, pci);
 +}
 +
-+static int zx279133_pcie_link_up(struct dw_pcie *pci)
++static bool zx279133_pcie_link_up(struct dw_pcie *pci)
 +{
 +	u32 val;
 +
@@ -557,3 +557,4 @@ new file mode 100644
 2.39.5
 -- 
 2.39.5
+
