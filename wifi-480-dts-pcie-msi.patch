@@ -1,0 +1,207 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ZWRT F7615MV30 bring-up <dev@local>
+Subject: [PATCH 480/490] arm64: dts: zx279133: add PCIe RC/MSI controllers, second xHCI, crypto node
+
+--- a/arch/arm64/boot/dts/zte/zx279133.dtsi
++++ b/arch/arm64/boot/dts/zte/zx279133.dtsi
+@@ -188,6 +188,16 @@
+ 			reg = <0x0 0x10e10208 0x0 0x4>;
+ 		};
+ 
++		/*
++		 * Boot slot control word read/written by the boot-slots
++		 * driver (measured in the vendor DTB, where the boot-mode
++		 * board info reads it as "boot-mode = <0x10e10170 0x03>").
++		 */
++		boot_ctrl: syscon@10e10170 {
++			compatible = "zxic,boot-ctrl", "syscon";
++			reg = <0x0 0x10e10170 0x0 0x4>;
++		};
++
+ 		lsp0_clk: clock-controller@10d00000 {
+ 			compatible = "zte,zx279133-lsp-clk", "syscon";
+ 			reg = <0x0 0x10d00000 0x0 0x100>;
+@@ -390,6 +400,22 @@
+ 			status = "disabled";
+ 		};
+ 
++		/*
++		 * Second ZXIC xHCI host, same shape as usb3@15010000;
++		 * GIC_SPI 63. F7615MV30 wires both hosts.
++		 */
++		usb2: usb@15008000 {
++			compatible = "zte,zx279133-xhci";
++			reg = <0x0 0x15008000 0x0 0x4000>;
++			interrupts = <GIC_SPI 63 IRQ_TYPE_LEVEL_HIGH>;
++			clocks = <&topcrm ZX279133_TOPCRM_CLK_USB_ACLK>,
++				 <&topcrm ZX279133_TOPCRM_CLK_USB_PCLK>,
++				 <&topcrm ZX279133_TOPCRM_CLK_USB_CCI_ACLK>;
++			clock-names = "core", "reg", "cci";
++			dma-coherent;
++			status = "disabled";
++		};
++
+ 		lsp1_clk: clock-controller@14f00000 {
+ 			compatible = "zte,zx279133-lsp1-clk";
+ 			reg = <0x0 0x14f00000 0x0 0x100>;
+@@ -587,5 +613,158 @@
+ 			clock-names = "csr";
+ 			status = "disabled";
+ 		};
++
++		/*
++		 * ZXIC MSI controller for pcie0. The vendor node aliases the
++		 * owning RC's register windows; the doorbell lives inside the
++		 * 4 MiB Dbi window and each vector is a dedicated GIC SPI.
++		 * Vendor "msi_num" for this bank: SPIs 67..98.
++		 */
++		msi0: msi@1f000000 {
++			compatible = "zte,msi-1.0-zxic";
++			reg = <0x0 0x1f000000 0x0 0x400000>,
++			      <0x0 0x15204000 0x0 0x1000>,
++			      <0x0 0x10e00000 0x0 0x4>;
++			reg-names = "dbi", "phy", "vector-slave";
++			interrupt-parent = <&gic>;
++			msi-controller;
++			zte,msi-num = <67 68 69 70 71 72 73 74 75 76
++				       77 78 79 80 81 82 83 84 85 86
++				       87 88 89 90 91 92 93 94 95 96
++				       97 98>;
++			status = "disabled";
++		};
++
++		msi1: msi@1f400000 {
++			compatible = "zte,msi-1.0-zxic";
++			reg = <0x0 0x1f400000 0x0 0x400000>,
++			      <0x0 0x15204000 0x0 0x1000>,
++			      <0x0 0x10e00004 0x0 0x4>;
++			reg-names = "dbi", "phy", "vector-slave";
++			interrupt-parent = <&gic>;
++			msi-controller;
++			/* Vendor "msi_num" for this bank: SPIs 118..149. */
++			zte,msi-num = <118 119 120 121 122 123 124 125 126 127
++				       128 129 130 131 132 133 134 135 136 137
++				       138 139 140 141 142 143 144 145 146 147
++				       148 149>;
++			status = "disabled";
++		};
++
++		/*
++		 * PCIe root port 0. Vendor DTB: single lane, Gen3,
++		 * dma-coherent, system IRQ edge-rising (GIC_SPI 105), INTx
++		 * A..D level-high on GIC_SPI 113..110. The vendor node
++		 * carries no clocks and no resets; firmware leaves the RC,
++		 * the shared PCIe PHY and the 25 MHz reference un-gated.
++		 */
++		pcie0: pcie@15200000 {
++			compatible = "zte,zx279133-pcie";
++			device_type = "pci";
++			#address-cells = <3>;
++			#size-cells = <2>;
++			#interrupt-cells = <1>;
++			linux,pci-domain = <0>;
++			msi-parent = <&msi0>;
++			bus-range = <0 0xff>;
++			num-lanes = <1>;
++			num-viewport = <1>;
++			max-link-speed = <3>;
++			reg = <0x0 0x15200000 0x0 0x2000>,
++			      <0x0 0x15204000 0x0 0x1000>,
++			      <0x0 0x1f000000 0x0 0x400000>,
++			      <0x0 0x2f800000 0x0 0x800000>,
++			      <0x0 0x10e00000 0x0 0x4>,
++			      <0x0 0x10e00000 0x0 0x10000>,
++			      <0x0 0x10e10000 0x0 0x10000>,
++			      <0x0 0x600060 0x0 0x4>;
++			reg-names = "csr", "phy", "dbi", "config", "msi",
++				    "sys", "top", "spimode";
++			ranges = <0x01000000 0x0 0x2f000000 0x0 0x2f000000 0x0 0x100000>,
++				 <0x02000000 0x0 0x20000000 0x0 0x20000000 0x0 0xf000000>;
++			dma-ranges = <0x42000000 0x0 0x80000000 0x0 0x80000000 0x0 0x40000000>;
++			dma-coherent;
++			interrupts = <GIC_SPI 105 IRQ_TYPE_EDGE_RISING>;
++			interrupt-map-mask = <0 0 0 7>;
++			interrupt-map = <0 0 0 1 &gic GIC_SPI 113 IRQ_TYPE_LEVEL_HIGH>,
++					<0 0 0 2 &gic GIC_SPI 112 IRQ_TYPE_LEVEL_HIGH>,
++					<0 0 0 3 &gic GIC_SPI 111 IRQ_TYPE_LEVEL_HIGH>,
++					<0 0 0 4 &gic GIC_SPI 110 IRQ_TYPE_LEVEL_HIGH>;
++			status = "disabled";
++		};
++
++		/*
++		 * PCIe root port 1. Same controller shape; its own Dbi/MSI
++		 * bank (SPIs 118..149) and sysctrl MSI word at 0x10e00004.
++		 * System IRQ GIC_SPI 156 edge-rising, INTx 164..161.
++		 */
++		pcie1: pcie@15202000 {
++			compatible = "zte,zx279133-pcie";
++			device_type = "pci";
++			#address-cells = <3>;
++			#size-cells = <2>;
++			#interrupt-cells = <1>;
++			linux,pci-domain = <1>;
++			msi-parent = <&msi1>;
++			bus-range = <0 0xff>;
++			num-lanes = <1>;
++			num-viewport = <1>;
++			max-link-speed = <3>;
++			reg = <0x0 0x15202000 0x0 0x2000>,
++			      <0x0 0x15204000 0x0 0x1000>,
++			      <0x0 0x1f400000 0x0 0x400000>,
++			      <0x0 0x3f800000 0x0 0x800000>,
++			      <0x0 0x10e00004 0x0 0x4>,
++			      <0x0 0x10e00000 0x0 0x10000>,
++			      <0x0 0x10e10000 0x0 0x10000>,
++			      <0x0 0x60006c 0x0 0x4>;
++			reg-names = "csr", "phy", "dbi", "config", "msi",
++				    "sys", "top", "spimode";
++			ranges = <0x01000000 0x0 0x3f000000 0x0 0x3f000000 0x0 0x100000>,
++				 <0x02000000 0x0 0x30000000 0x0 0x30000000 0x0 0xf000000>;
++			dma-ranges = <0x42000000 0x0 0x80000000 0x0 0x80000000 0x0 0x40000000>;
++			dma-coherent;
++			interrupts = <GIC_SPI 156 IRQ_TYPE_EDGE_RISING>;
++			interrupt-map-mask = <0 0 0 7>;
++			interrupt-map = <0 0 0 1 &gic GIC_SPI 164 IRQ_TYPE_LEVEL_HIGH>,
++					<0 0 0 2 &gic GIC_SPI 163 IRQ_TYPE_LEVEL_HIGH>,
++					<0 0 0 3 &gic GIC_SPI 162 IRQ_TYPE_LEVEL_HIGH>,
++					<0 0 0 4 &gic GIC_SPI 161 IRQ_TYPE_LEVEL_HIGH>;
++			status = "disabled";
++		};
++
++		/*
++		 * BTTL/IPSEC engine. The vendor kernel drives it with the
++		 * zxic BTTL SEC driver, which has not been ported yet; the
++		 * node only reserves the windows, IRQs and its memory pool
++		 * so nothing else allocates over them. The vendor DTB
++		 * feeds it topcrm clock IDs 28..31, which the mainline
++		 * binding header does not define yet, so clocks stay out
++		 * until those gates are measured and named.
++		 */
++		crypto: crypto@12000000 {
++			compatible = "zte,zx279133-ipsec";
++			reg = <0x0 0x12000000 0x0 0x01000000>,
++			      <0x0 0x13000000 0x0 0x01000000>;
++			reg-names = "bttl", "trng";
++			interrupts = <GIC_SPI 174 IRQ_TYPE_LEVEL_HIGH>,
++				     <GIC_SPI 175 IRQ_TYPE_LEVEL_HIGH>,
++				     <GIC_SPI 176 IRQ_TYPE_LEVEL_HIGH>,
++				     <GIC_SPI 177 IRQ_TYPE_LEVEL_HIGH>,
++				     <GIC_SPI 178 IRQ_TYPE_LEVEL_HIGH>,
++				     <GIC_SPI 179 IRQ_TYPE_LEVEL_HIGH>,
++				     <GIC_SPI 180 IRQ_TYPE_LEVEL_HIGH>,
++				     <GIC_SPI 181 IRQ_TYPE_LEVEL_HIGH>,
++				     <GIC_SPI 182 IRQ_TYPE_LEVEL_HIGH>,
++				     <GIC_SPI 183 IRQ_TYPE_LEVEL_HIGH>,
++				     <GIC_SPI 184 IRQ_TYPE_LEVEL_HIGH>;
++			interrupt-names = "pd0", "pd1", "pd2", "pd3",
++					  "ram0-err", "ram1-err",
++					  "ram2-err", "ram3-err",
++					  "qc-fifo-err", "euc-err", "trng";
++			resets = <&top_reset 13>;
++			reset-names = "ipsec";
++			status = "disabled";
++		};
+ 	};
+ };
+-- 
+2.39.5

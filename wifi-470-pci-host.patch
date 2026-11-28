@@ -1,0 +1,559 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ZWRT F7615MV30 bring-up <dev@local>
+Subject: [PATCH 470/490] pci: dwc: add ZTE ZX279133 PCIe host and ZXIC MSI controller
+
+--- a/drivers/pci/controller/dwc/Kconfig
++++ b/drivers/pci/controller/dwc/Kconfig
+@@ -25,6 +25,17 @@
+ config PCIE_DW_EP
+ 	bool
+ 	select PCIE_DW
++config PCIE_ZX279133_HOST
++	bool "ZTE ZX279133 PCIe host controller"
++	depends on ARM64 || COMPILE_TEST
++	depends on OF && PCI_MSI
++	select PCIE_DW_HOST
++	help
++	  Say Y here to enable the PCIe host controller driver for the ZTE
++	  ZX279133 (ZXIC) SoC. The controller is DesignWare based; the
++	  vendor DTB describes two single-lane Gen3 root ports, with the
++	  MSI controller placed on each port's own Dbi window.
++
+ 
+ config PCIE_AL
+ 	bool "Amazon Annapurna Labs PCIe controller"
+--- a/drivers/pci/controller/dwc/Makefile
++++ b/drivers/pci/controller/dwc/Makefile
+@@ -4,6 +4,7 @@
+ obj-$(CONFIG_PCIE_DW_HOST) += pcie-designware-host.o
+ obj-$(CONFIG_PCIE_DW_EP) += pcie-designware-ep.o
+ obj-$(CONFIG_PCIE_DW_PLAT) += pcie-designware-plat.o
++obj-$(CONFIG_PCIE_ZX279133_HOST) += pcie-zx279133.o msi-zte-zxic.o
+ obj-$(CONFIG_PCIE_AMD_MDB) += pcie-amd-mdb.o
+ obj-$(CONFIG_PCIE_BT1) += pcie-bt1.o
+ obj-$(CONFIG_PCI_DRA7XX) += pci-dra7xx.o
+diff --git a/drivers/pci/controller/dwc/msi-zte-zxic.c b/drivers/pci/controller/dwc/msi-zte-zxic.c
+new file mode 100644
+--- /dev/null
++++ b/drivers/pci/controller/dwc/msi-zte-zxic.c
+@@ -0,0 +1,269 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * ZTE/ZXIC MSI controller ("zte,msi-1.0-zxic").
++ *
++ * The vendor board DTB describes the MSI controller as a node that only
++ * aliases the owning PCIe controller's register windows:
++ *
++ *   reg-names = "dbi", "phy", "vector-slave";
++ *
++ * "dbi" is the PCIe controller's own 4 MiB DWC register window, so the
++ * MSI doorbell lives inside that address range: a device writes its MSI
++ * transaction into the window and the hardware raises the GIC SPI listed
++ * in "zte,msi-num" for the addressed vector. Each controller owns one
++ * window and one vector bank: pcie0 Dbi 0x1f000000 with SPIs 67..98,
++ * pcie1 Dbi 0x1f400000 with SPIs 118..149.
++ *
++ * The GIC on this SoC is a GICv3 without ITS, therefore each vector is
++ * a dedicated SPI taken verbatim from the "zte,msi-num" array. The
++ * driver follows the GICv3 MBI pattern (irq-gic-v3-mbi.c): a MSI-parent
++ * irq domain whose alloc hands every vector to the GIC as a level-high
++ * SPI, and whose compose writes the doorbell address into the message.
++ *
++ * UNMEASURED: the exact doorbell encoding is not recoverable from the
++ * DTB. v1 models it as
++ *
++ *   address = Dbi_base + vector * zte,msi-doorbell-stride  (default 4)
++ *   data    = zte,msi-doorbell-data                       (default 0)
++ *
++ * with both tunable from DT, and logs the first composed message so a
++ * stock-boot log capture can correct it quickly. If the hardware needs a
++ * per-vector enable register write inside the Dbi window, that goes into
++ * zxmsi_alloc()/zxmsi_free() next to the marked TODO.
++ */
++
++#include <linux/bitmap.h>
++#include <linux/irq.h>
++#include <linux/irqchip/irq-msi-lib.h>
++#include <linux/irqdomain.h>
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/msi.h>
++#include <linux/mutex.h>
++#include <linux/of_address.h>
++#include <linux/of_irq.h>
++#include <linux/platform_device.h>
++
++/*
++ * Every GIC SPI in the vendor DTB is declared level-high (type 0x04).
++ * If a stock-boot capture shows the MSI SPIs as edge triggered, change
++ * this (or make it DT-tunable) together with the compose data below.
++ */
++#define ZXMSI_TRIGGER		IRQ_TYPE_LEVEL_HIGH
++
++struct zxmsi {
++	struct device		*dev;
++	phys_addr_t		doorbell;
++	u32			stride;
++	u32			data;
++	u32			num_vectors;
++	u32			spi[32];
++	unsigned long		*vectors_in_use;
++	struct mutex		lock;
++	void __iomem		*vector_slave;
++};
++
++static void zxmsi_compose_msi_msg(struct irq_data *d, struct msi_msg *msg)
++{
++	struct zxmsi *zx = irq_data_get_irq_chip_data(d);
++	phys_addr_t addr = zx->doorbell + d->hwirq * zx->stride;
++
++	msg->address_hi = upper_32_bits(addr);
++	msg->address_lo = lower_32_bits(addr);
++	msg->data = zx->data;
++
++	if (d->hwirq == 0)
++		dev_dbg(zx->dev, "MSI#0 -> addr %pap data %#x\n",
++			&addr, msg->data);
++}
++
++static int zxmsi_gic_alloc(struct irq_domain *domain, unsigned int virq,
++			   irq_hw_number_t hwirq)
++{
++	struct zxmsi *zx = domain->host_data;
++	struct irq_fwspec fwspec;
++	int err;
++
++	/* One vector == one dedicated GIC SPI from the vendor array. */
++	fwspec.fwnode = domain->parent->fwnode;
++	fwspec.param_count = 3;
++	fwspec.param[0] = GIC_SPI;
++	fwspec.param[1] = zx->spi[hwirq];
++	fwspec.param[2] = ZXMSI_TRIGGER;
++
++	/*
++	 * TODO(UNMEASURED): a per-vector enable register inside the Dbi
++	 * window goes here once a stock-boot log capture shows the
++	 * register protocol.
++	 */
++
++	return irq_domain_alloc_irqs_parent(domain, virq, 1, &fwspec);
++}
++
++static int zxmsi_alloc(struct irq_domain *domain, unsigned int virq,
++		       unsigned int nr_irqs, void *args)
++{
++	msi_alloc_info_t *info = args;
++	struct zxmsi *zx = domain->host_data;
++	unsigned long bit;
++	int i;
++
++	mutex_lock(&zx->lock);
++	bit = bitmap_find_free_region(zx->vectors_in_use, zx->num_vectors,
++				      order_base_2(nr_irqs));
++	mutex_unlock(&zx->lock);
++
++	if (bit >= zx->num_vectors)
++		return -ENOSPC;
++
++	for (i = 0; i < nr_irqs; i++) {
++		int err;
++
++		err = zxmsi_gic_alloc(domain, virq + i, bit + i);
++		if (err) {
++			irq_domain_free_irqs_parent(domain, virq, nr_irqs);
++			mutex_lock(&zx->lock);
++			bitmap_release_region(zx->vectors_in_use, bit,
++					      order_base_2(nr_irqs));
++			mutex_unlock(&zx->lock);
++			return err;
++		}
++
++		irq_domain_set_hwirq_and_chip(domain, virq + i, bit + i,
++					      NULL, zx);
++	}
++
++	return 0;
++}
++
++static void zxmsi_free(struct irq_domain *domain, unsigned int virq,
++		       unsigned int nr_irqs)
++{
++	struct zxmsi *zx = domain->host_data;
++	struct irq_data *d = irq_domain_get_irq_data(domain, virq);
++
++	irq_domain_free_irqs_parent(domain, virq, nr_irqs);
++
++	mutex_lock(&zx->lock);
++	bitmap_release_region(zx->vectors_in_use, d->hwirq,
++			      order_base_2(nr_irqs));
++	mutex_unlock(&zx->lock);
++}
++
++static const struct irq_domain_ops zxmsi_domain_ops = {
++	.select		= msi_lib_irq_domain_select,
++	.alloc		= zxmsi_alloc,
++	.free		= zxmsi_free,
++};
++
++static bool zxmsi_init_dev_msi_info(struct device *dev,
++				    struct irq_domain *domain,
++				    struct irq_domain *real_parent,
++				    struct msi_domain_info *info)
++{
++	if (!msi_lib_init_dev_msi_info(dev, domain, real_parent, info))
++		return false;
++
++	switch (info->bus_token) {
++	case DOMAIN_BUS_PCI_DEVICE_MSI:
++	case DOMAIN_BUS_PCI_DEVICE_MSIX:
++		info->chip->irq_compose_msi_msg = zxmsi_compose_msi_msg;
++		return true;
++
++	default:
++		WARN_ON_ONCE(1);
++		return false;
++	}
++}
++
++#define ZXMSI_FLAGS_REQUIRED	(MSI_FLAG_USE_DEF_DOM_OPS |	\
++				 MSI_FLAG_USE_DEF_CHIP_OPS |	\
++				 MSI_FLAG_PCI_MSI_MASK_PARENT)
++
++#define ZXMSI_FLAGS_SUPPORTED	(MSI_GENERIC_FLAGS_MASK |	\
++				 MSI_FLAG_PCI_MSIX |		\
++				 MSI_FLAG_MULTI_PCI_MSI)
++
++static const struct msi_parent_ops zxmsi_parent_ops = {
++	.supported_flags	= ZXMSI_FLAGS_SUPPORTED,
++	.required_flags		= ZXMSI_FLAGS_REQUIRED,
++	.chip_flags		= MSI_CHIP_FLAG_SET_EOI,
++	.bus_select_token	= DOMAIN_BUS_NEXUS,
++	.bus_select_mask	= MATCH_PCI_MSI,
++	.prefix			= "ZXIC-MSI-",
++	.init_dev_msi_info	= zxmsi_init_dev_msi_info,
++};
++
++static int zxmsi_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct device_node *np = dev->of_node;
++	struct device_node *parent_np;
++	struct irq_domain *parent;
++	struct irq_domain_info info = { };
++	struct zxmsi *zx;
++	struct resource *dbi;
++	int vectors, i;
++
++	zx = devm_kzalloc(dev, sizeof(*zx), GFP_KERNEL);
++	if (!zx)
++		return -ENOMEM;
++	zx->dev = dev;
++	mutex_init(&zx->lock);
++
++	dbi = platform_get_resource_byname(pdev, IORESOURCE_MEM, "dbi");
++	if (!dbi) {
++		dev_err(dev, "missing \"dbi\" doorbell window\n");
++		return -ENODEV;
++	}
++	zx->doorbell = dbi->start;
++
++	/* Mapped for completeness/inspection only; v1 does not poke it. */
++	zx->vector_slave = devm_platform_ioremap_resource_byname(pdev,
++								 "vector-slave");
++	if (IS_ERR(zx->vector_slave))
++		return PTR_ERR(zx->vector_slave);
++
++	if (of_property_read_u32(np, "zte,msi-doorbell-stride", &zx->stride))
++		zx->stride = 4;
++	if (of_property_read_u32(np, "zte,msi-doorbell-data", &zx->data))
++		zx->data = 0;
++
++	vectors = of_property_count_u32_elems(np, "zte,msi-num");
++	if (vectors < 1 || vectors > 32) {
++		dev_err(dev, "bad zte,msi-num array (%d)\n", vectors);
++		return -EINVAL;
++	}
++	zx->num_vectors = vectors;
++	for (i = 0; i < vectors; i++) {
++		int ret;
++
++		ret = of_property_read_u32_index(np, "zte,msi-num", i,
++						 &zx->spi[i]);
++		if (ret)
++			return ret;
++	}
++
++	zx->vectors_in_use = bitmap_zalloc(zx->num_vectors, GFP_KERNEL);
++	if (!zx->vectors_in_use)
++		return -ENOMEM;
++
++	parent_np = of_irq_find_parent(np);
++	parent = irq_find_host(parent_np);
++	of_node_put(parent_np);
++	if (!parent) {
++		dev_err(dev, "cannot find parent (GIC) irq domain\n");
++		return -EPROBE_DEFER;
++	}
++
++	info.fwnode = dev_fwnode(dev);
++	info.ops = &zxmsi_domain_ops;
++	info.size = zx->num_vectors;
++	info.host_data = zx;
++	info.parent = parent;
++
++	if (!msi_create_parent_irq_domain(&info, &zxmsi_parent_ops)) {
++		dev_err(dev, "failed to create MSI parent domain\n");
++		return -ENOMEM;
++	}
++
++	platform_set_drvdata(pdev, zx);
++
++	dev_info(dev,
++		 "doorbell %pap stride %u data %u, %u vectors, first SPI %u\n",
++		 &zx->doorbell, zx->stride, zx->data, zx->num_vectors,
++		 zx->spi[0]);
++	return 0;
++}
++
++static const struct of_device_id zxmsi_of_match[] = {
++	{ .compatible = "zte,msi-1.0-zxic" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, zxmsi_of_match);
++
++static struct platform_driver zxmsi_driver = {
++	.probe	= zxmsi_probe,
++	.driver	= {
++		.name		= "zte-zxic-msi",
++		.of_match_table	= zxmsi_of_match,
++	},
++};
++builtin_platform_driver(zxmsi_driver);
++
++MODULE_DESCRIPTION("ZTE/ZXIC MSI controller (doorbell -> GIC SPI)");
++MODULE_LICENSE("GPL");
+diff --git a/drivers/pci/controller/dwc/pcie-zx279133.c b/drivers/pci/controller/dwc/pcie-zx279133.c
+new file mode 100644
+--- /dev/null
++++ b/drivers/pci/controller/dwc/pcie-zx279133.c
+@@ -0,0 +1,197 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * PCIe host controller driver for the ZTE ZX279133 (ZXIC) SoC.
++ *
++ * DesignWare based. The vendor board DTB describes the controller with
++ * eight register windows:
++ *
++ *   Csr      0x15200000  0x2000    root controller CSR (pcie0)
++ *   Phy      0x15204000  0x1000    shared PCIe PHY (pcie0+pcie1)
++ *   Dbi      0x1f000000  0x400000  DWC DBI (plus MSI doorbells, see
++ *                                  msi-zte-zxic.c)
++ *   Config   0x2f800000  0x800000  ECAM-style config window
++ *   Msi      0x10e00000  0x4       sysctrl word for this port
++ *   Sys      0x10e00000  0x10000   system controller window
++ *   Top      0x10e10000  0x10000   top controller window
++ *   Spimode  0x600060    0x4       boot mode strap readback
++ *
++ * The vendor node carries no "clocks" and no "resets": firmware leaves
++ * the RC, the PHY and the PCIe 25 MHz reference un-gated. v1 therefore
++ * relies on the firmware hand-off, maps the vendor windows and defers
++ * any register pokes to follow-ups measured against a stock boot log.
++ *
++ * UNMEASURED follow-ups (kept out of v1 on purpose):
++ *   - the Csr/Phy/Sys/Top bring-up sequence, needed only if firmware
++ *     leaves the link untrained
++ *   - the "msi" sysctrl word (v1 only maps it)
++ */
++
++#include <linux/bitfield.h>
++#include <linux/gpio/consumer.h>
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/msi.h>
++#include <linux/of.h>
++#include <linux/pci.h>
++#include <linux/platform_device.h>
++#include <linux/reset.h>
++
++#include "pcie-designware.h"
++
++struct zx279133_pcie {
++	struct dw_pcie		pci;
++	void __iomem		*csr;
++	void __iomem		*phy;
++	void __iomem		*sys;
++	void __iomem		*top;
++	void __iomem		*spimode;
++	void __iomem		*msi_ctrl;
++	struct gpio_desc	*perst;
++};
++
++static struct zx279133_pcie *to_zx279133_pcie(struct dw_pcie *pci)
++{
++	return container_of(pci, struct zx279133_pcie, pci);
++}
++
++static int zx279133_pcie_link_up(struct dw_pcie *pci)
++{
++	u32 val;
++
++	/*
++	 * Standard DWC link status: DEBUG0 (DBI 0x0f4) bit 0 (DLLLA) plus
++	 * the LNKSTA readback. The vendor DTB declares target-speed Gen3
++	 * with num-lanes 1.
++	 */
++	val = dw_pcie_readl_dbi(pci, 0x0f4);
++	if (!(val & BIT(0)))
++		return 0;
++
++	val = dw_pcie_readl_dbi(pci, PCI_EXP_LNKSTA);
++	return !!(val & PCI_EXP_LNKSTA_DLLLA);
++}
++
++static int zx279133_pcie_start_link(struct dw_pcie *pci)
++{
++	struct zx279133_pcie *zx = to_zx279133_pcie(pci);
++
++	/*
++	 * UNMEASURED: the vendor driver presumably toggles link
++	 * enable/retrain bits in the Csr window. Firmware starts training
++	 * before the kernel boots (the vendor DTB marks the node "okay"
++	 * with no driver-side init properties), so v1 only observes the
++	 * link state. If a stock-boot capture shows an explicit init
++	 * sequence, port it here.
++	 */
++	dev_dbg(pci->dev,
++		"csr %px phy %px sys %px top %px spimode %px msi %px\n",
++		zx->csr, zx->phy, zx->sys, zx->top, zx->spimode,
++		zx->msi_ctrl);
++
++	return 0;
++}
++
++static const struct dw_pcie_ops zx279133_dw_pcie_ops = {
++	.link_up	= zx279133_pcie_link_up,
++	.start_link	= zx279133_pcie_start_link,
++};
++
++static int zx279133_pcie_init(struct dw_pcie_rp *pp)
++{
++	struct dw_pcie *pci = to_dw_pcie_from_pp(pp);
++	struct platform_device *pdev = to_platform_device(pci->dev);
++	struct zx279133_pcie *zx = to_zx279133_pcie(pci);
++	struct gpio_desc *perst;
++
++	/*
++	 * Map the vendor windows. dw_pcie_get_resources() already handled
++	 * "dbi" and the generic DWC windows; these are the ZXIC extras.
++	 */
++	zx->csr = devm_platform_ioremap_resource_byname(pdev, "csr");
++	if (IS_ERR(zx->csr))
++		return PTR_ERR(zx->csr);
++	zx->phy = devm_platform_ioremap_resource_byname(pdev, "phy");
++	if (IS_ERR(zx->phy))
++		return PTR_ERR(zx->phy);
++	zx->sys = devm_platform_ioremap_resource_byname(pdev, "sys");
++	if (IS_ERR(zx->sys))
++		return PTR_ERR(zx->sys);
++	zx->top = devm_platform_ioremap_resource_byname(pdev, "top");
++	if (IS_ERR(zx->top))
++		return PTR_ERR(zx->top);
++	zx->msi_ctrl = devm_platform_ioremap_resource_byname(pdev, "msi");
++	if (IS_ERR(zx->msi_ctrl))
++		return PTR_ERR(zx->msi_ctrl);
++	zx->spimode = devm_platform_ioremap_resource_byname(pdev, "spimode");
++	if (IS_ERR(zx->spimode))
++		return PTR_ERR(zx->spimode);
++
++	/*
++	 * Optional Perst# for boards that wire it. F7615MV30's vendor DTB
++	 * does not declare one; the ZTE board driver drives the
++	 * "wifi-power-ctr" GPIO (GPIO bank 2 line 2 on the F7615MV30
++	 * board-info) to power the WiFi rail instead.
++	 */
++	perst = devm_gpiod_get_optional(pci->dev, "perst", GPIOD_OUT_HIGH);
++	if (IS_ERR(perst))
++		return PTR_ERR(perst);
++	zx->perst = perst;
++
++	return 0;
++}
++
++static void zx279133_pcie_deinit(struct dw_pcie_rp *pp)
++{
++	struct dw_pcie *pci = to_dw_pcie_from_pp(pp);
++	struct zx279133_pcie *zx = to_zx279133_pcie(pci);
++
++	if (zx->perst)
++		gpiod_set_value_cansleep(zx->perst, 1);
++}
++
++static const struct dw_pcie_host_ops zx279133_host_ops = {
++	.init	= zx279133_pcie_init,
++	.deinit	= zx279133_pcie_deinit,
++};
++
++static int zx279133_pcie_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct zx279133_pcie *zx;
++	struct dw_pcie *pci;
++	int ret;
++
++	zx = devm_kzalloc(dev, sizeof(*zx), GFP_KERNEL);
++	if (!zx)
++		return -ENOMEM;
++
++	pci = &zx->pci;
++	pci->dev = dev;
++	pci->ops = &zx279133_dw_pcie_ops;
++	zx->pci.pp.ops = &zx279133_host_ops;
++
++	platform_set_drvdata(pdev, zx);
++
++	ret = dw_pcie_host_init(&zx->pci.pp);
++	if (ret) {
++		dev_err(dev, "host init failed: %d\n", ret);
++		return ret;
++	}
++
++	return 0;
++}
++
++static void zx279133_pcie_remove(struct platform_device *pdev)
++{
++	struct zx279133_pcie *zx = platform_get_drvdata(pdev);
++
++	dw_pcie_host_deinit(&zx->pci.pp);
++}
++
++static const struct of_device_id zx279133_pcie_of_match[] = {
++	{ .compatible = "zte,zx279133-pcie" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, zx279133_pcie_of_match);
++
++static struct platform_driver zx279133_pcie_driver = {
++	.probe	= zx279133_pcie_probe,
++	.remove	= zx279133_pcie_remove,
++	.driver	= {
++		.name		= "zx279133-pcie",
++		.of_match_table	= zx279133_pcie_of_match,
++	},
++};
++builtin_platform_driver(zx279133_pcie_driver);
++
++MODULE_DESCRIPTION("ZTE ZX279133 PCIe host controller driver");
++MODULE_LICENSE("GPL");
+-- 
+2.39.5
+-- 
+2.39.5
+-- 
+2.39.5
+-- 
+2.39.5
+-- 
+2.39.5
+-- 
+2.39.5

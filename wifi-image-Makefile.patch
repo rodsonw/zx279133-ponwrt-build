@@ -1,0 +1,41 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ZWRT F7615MV30 bring-up <dev@local>
+Subject: [PATCH] immortalwrt: zte target: add ZTE ZXHN F7615MV30 device
+
+Adds the device entry (FIT kernel + squashfs-ubi rootfs in a
+sysupgrade tar) plus the WiFi/USB/LuCI package set. The kernel
+board DTS comes from patch 490; the WiFi stack rides on the
+in-tree mt7915e driver for the MT7916AN on PCIe port 0.
+
+--- a/target/linux/zte/image/Makefile
++++ b/target/linux/zte/image/Makefile
+@@ -53,4 +53,29 @@
+ endef
+ TARGET_DEVICES += zte_zxslc-sr1010
+ 
++define Device/zte_zxhn-f7615mv30
++  DEVICE_VENDOR := ZTE
++  DEVICE_MODEL := ZXHN F7615MV30
++  DEVICE_DTS := zx279133-f7615mv30-openwrt
++  DEVICE_DTS_DIR := $(TOPDIR)/target/linux/zte/dts
++  SUPPORTED_DEVICES := zte,f7615mv30
++  DEVICE_PACKAGES := \
++		kmod-mt7915e mt7915-firmware \
++		kmod-usb3 kmod-gpio-button-hotplug \
++		luci-base luci-mod-admin-full luci-theme-bootstrap \
++		luci-proto-ipv6 luci-proto-ppp ppp ppp-mod-pppoe \
++		odhcp6c odhcpd-ipv6only \
++		uhttpd uhttpd-mod-ubus openssh-sftp-server \
++		dnsmasq ethtool ip-full firewall4 nftables-json kmod-nft-offload
++  # Boot path TODO: F7615MV30's ZTE U-Boot and the boot-slot mechanism
++  # are not wired up yet (see the adaptation README). The recipe emits a
++  # standard sysupgrade tar with the FIT kernel and the squashfs-ubi
++  # rootfs so both can be written to the "kernel"/"ubi" partitions by
++  # hand or by a future fwslot-style helper.
++  IMAGES := sysupgrade.bin
++  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
++endef
++TARGET_DEVICES += zte_zxhn-f7615mv30
++
++
+ $(eval $(call BuildImage))

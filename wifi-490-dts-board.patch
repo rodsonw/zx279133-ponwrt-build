@@ -1,0 +1,327 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ZWRT F7615MV30 bring-up <dev@local>
+Subject: [PATCH 490/490] arm64: dts: zx279133: add ZTE ZXHN F7615MV30 board
+
+--- a/arch/arm64/boot/dts/zte/Makefile
++++ b/arch/arm64/boot/dts/zte/Makefile
+@@ -1,2 +1,3 @@
+ # SPDX-License-Identifier: GPL-2.0
+ dtb-y += zx279133-sr1010.dtb
++dtb-y += zx279133-f7615mv30.dtb
+--- a/arch/arm64/boot/dts/zte/zx279133-f7615mv30.dts
++++ b/arch/arm64/boot/dts/zte/zx279133-f7615mv30.dts
+@@ -0,0 +1,312 @@
++// SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
++/dts-v1/;
++
++#include <dt-bindings/gpio/gpio.h>
++#include <dt-bindings/input/input.h>
++#include <dt-bindings/leds/common.h>
++#include <dt-bindings/interrupt-controller/arm-gic.h>
++
++#include "zx279133.dtsi"
++
++/*
++ * ZTE ZXHN F7615MV30 (GPON ONT, ZX279133).
++ *
++ * Board facts below come from the F7615MV30 stock board DTB the device
++ * owner extracted (flash layout, port wiring, resets), cross-checked
++ * against the vendor SK-D840N board.dtb for the SoC-level blocks.
++ * Items marked TODO need one more measurement from the board (stock
++ * boot log or a telnet probe) before they can be enabled.
++ */
++/ {
++	model = "ZTE ZXHN F7615MV30";
++	compatible = "zte,f7615mv30", "zte,f7005mv3", "zte,f7615mv3",
++		     "zte,zx279133";
++
++	aliases {
++		serial0 = &uart0;
++		watchdog0 = &watchdog0;
++		i2c0 = &i2c_pon;
++	};
++
++	chosen {
++		stdout-path = "serial0:115200n8";
++	};
++
++	memory@80000000 {
++		device_type = "memory";
++		reg = <0x0 0x80000000 0x0 0x20000000>;
++	};
++
++	reserved-memory {
++		#address-cells = <2>;
++		#size-cells = <2>;
++		ranges;
++
++		/* Vendor DTB: auto-placed no-map pools for the NPPT driver. */
++		bmu_reserved: buffer-bmu {
++			size = <0x0 0x01300000>;
++			alignment = <0x0 0x1000>;
++			no-map;
++		};
++
++		se_hash_reserved: buffer-se-hash {
++			size = <0x0 0x01000000>;
++			alignment = <0x0 0x1000>;
++			no-map;
++		};
++
++		idm_reserved: buffer-idm {
++			size = <0x0 0x00a00000>;
++			alignment = <0x0 0x1000>;
++			no-map;
++		};
++
++		/* Vendor DTB: fixed BTTL/IPSEC buffer. */
++		ipsec_buffer: buffer@8f800000 {
++			reg = <0x0 0x8f800000 0x0 0x00200000>;
++			no-map;
++		};
++
++		/* Vendor DTB: fixed se-ddr buffer for the LAN conduit. */
++		se_ddr_reserved: buffer@91000000 {
++			reg = <0x0 0x91000000 0x0 0x02000000>;
++			no-map;
++		};
++
++		/* Vendor DTB: 0x00090000 buffer near the end of DRAM. */
++		buffer@9ff70000 {
++			reg = <0x0 0x9ff70000 0x0 0x00090000>;
++			no-map;
++		};
++	};
++
++	/*
++	 * GPIO bit-banged I2C toward the PON side, as declared in the
++	 * vendor DTB (scl/sda on GPIO bank 0 lines 9/10, single-ended
++	 * open-drain). Only consumed by the vendor PON stack so far.
++	 */
++	i2c_pon: i2c-pon {
++		compatible = "i2c-gpio";
++		#address-cells = <1>;
++		#size-cells = <0>;
++		scl-gpios = <&gpio0 9 (GPIO_ACTIVE_HIGH | GPIO_SINGLE_ENDED |
++				       GPIO_LINE_OPEN_DRAIN)>;
++		sda-gpios = <&gpio0 10 (GPIO_ACTIVE_HIGH | GPIO_SINGLE_ENDED |
++					GPIO_LINE_OPEN_DRAIN)>;
++		i2c-gpio,delay-us = <5>;
++	};
++
++	/*
++	 * TODO(board): the vendor DTB declares keys@restore/keys@wps/
++	 * keys@wlan and the led groups (led_wlan among them), but the
++	 * extracted DTS carries unresolved phandles, so the GPIO map is
++	 * not measured yet. Add them once the GPIO lines are confirmed.
++	 */
++
++	thermal-zones {
++		soc-thermal {
++			thermal-sensors = <&pvt>;
++		};
++	};
++};
++
++&uart0 {
++	status = "okay";
++};
++
++&pvt {
++	status = "okay";
++};
++
++/*
++ * The BTTL/IPSEC engine (soc/crypto@12000000, added disabled in the
++ * dtsi) keeps its vendor register reservation; its 2 MiB pool at
++ * 0x8f800000 is reserved above and the BTTL SEC driver port is future
++ * work, so the node stays disabled.
++ */
++
++&spifc {
++	status = "okay";
++
++	flash@0 {
++		partitions-only;
++		spi-max-frequency = <50000000>;
++		spi-tx-bus-width = <1>;
++		spi-rx-bus-width = <1>;
++
++		partitions {
++			/*
++			 * F7615MV30 stock layout, measured on the device.
++			 * "kernel" (16 MiB) and "ubi" (233 MiB) are the two
++			 * slots OpenWrt manages; everything before them stays
++			 * read-only so the vendor firmware and its settings
++			 * survive.
++			 */
++			partition@0 {
++				label = "u-boot";
++				reg = <0x000000 0x300000>;
++				read-only;
++			};
++
++			partition@300000 {
++				label = "others";
++				reg = <0x300000 0x200000>;
++				read-only;
++			};
++
++			partition@500000 {
++				label = "parameter tags";
++				reg = <0x500000 0x200000>;
++				read-only;
++			};
++
++			partition@700000 {
++				label = "kernel";
++				reg = <0x700000 0x1000000>;
++			};
++
++			partition@1700000 {
++				compatible = "linux,ubi";
++				label = "ubi";
++				reg = <0x1700000 0xe900000>;
++			};
++		};
++	};
++};
++
++&usb2 {
++	status = "okay";
++};
++
++&usb3 {
++	status = "okay";
++};
++
++&pon_serdes {
++	status = "disabled";
++};
++
++&uni_serdes {
++	status = "okay";
++};
++
++&xpcs0 {
++	status = "okay";
++};
++
++&xpcs1 {
++	status = "okay";
++};
++
++/*
++ * MT7916AN + MT7976DN WiFi (AX3000) on PCIe port 0, the standard ZTE
++ * ZXIC + MediaTek wireless pairing (same as the vendor E1630, which
++ * pairs ZX279128S with MT7916AN+MT7976DN). The EEPROM/calibration
++ * source is UNMEASURED so far: wire the factory calibration into an
++ * nvmem cell named "calibration" under the wifi node once its location
++ * inside the flash has been dumped from the device, e.g. via a
++ * fixed-layout nvmem-layout on the partition that holds it. mt76 also
++ * falls back to the chip's own OTP when no cell is present.
++ */
++&pcie0 {
++	status = "okay";
++
++	pcie@0,0 {
++		reg = <0x0000 0x0 0x0 0x0 0x0>;
++		#address-cells = <3>;
++		#size-cells = <2>;
++
++		wifi@0,0 {
++			compatible = "mediatek,mt7916";
++			reg = <0x0000 0x0 0x0 0x0 0x0>;
++		};
++	};
++};
++
++&nppt {
++	pcs-handle = <&xpcs0>;
++	zte,lan-pcs-handle = <&xpcs0>;
++	phys = <&uni_serdes>;
++	phy-names = "serdes";
++	zte,pon-route = <&pon_route>;
++	zte,idm-cci = <&idm_cci>;
++	phy-mode = "2500base-x";
++	zte,direct-multi-port;
++	zte,primary-xmac = <0>;
++	zte,primary-hw-port = <5>;
++	memory-region = <&bmu_reserved>, <&se_hash_reserved>,
++			<&idm_reserved>, <&se_ddr_reserved>;
++	memory-region-names = "bmu", "se-hash", "idm", "se-ddr";
++	phy-handle = <&phy_25g>;
++	label = "lan1";
++	status = "okay";
++
++	pon {
++		compatible = "zte,zx279133-pon", "zte,zx279133-sg351-pon";
++		interrupts = <GIC_SPI 6 IRQ_TYPE_LEVEL_HIGH>;
++		/*
++		 * Vendor DTB wires the PON transmitter enable to GPIO bank
++		 * 2 line 2 (active low). The pon_ben pinctrl group (P2-2)
++		 * is left out: the mainline zx279133 pinctrl driver does
++		 * not implement the pon_ben function yet.
++		 */
++		txp-gpios = <&gpio2 2 GPIO_ACTIVE_LOW>;
++	};
++
++	ge-ports {
++		compatible = "zte,zx279133-direct-ge-ports",
++			     "zte,zx279133-sg351-ge-ports";
++		#address-cells = <1>;
++		#size-cells = <0>;
++		status = "okay";
++
++		port@1 {
++			reg = <1>;
++			phy-handle = <&phy_ge1>;
++			phy-mode = "gmii";
++			label = "lan2";
++		};
++
++		port@2 {
++			reg = <2>;
++			phy-handle = <&phy_ge2>;
++			phy-mode = "gmii";
++			label = "lan3";
++		};
++
++		port@3 {
++			reg = <3>;
++			phy-handle = <&phy_ge3>;
++			phy-mode = "gmii";
++			label = "lan4";
++		};
++	};
++};
++
++&mdio0 {
++	status = "okay";
++
++	/* 2.5G LAN1, C45 PHY on address 1, reset on GPIO bank 0 line 8. */
++	phy_25g: ethernet-phy@1 {
++		compatible = "ethernet-phy-ieee802.3-c45";
++		reg = <1>;
++		reset-gpios = <&gpio0 8 GPIO_ACTIVE_LOW>;
++		reset-assert-us = <50000>;
++		reset-deassert-us = <300000>;
++	};
++
++	phy_ge1: ethernet-phy@b {
++		compatible = "ethernet-phy-ieee802.3-c22";
++		reg = <0xb>;
++	};
++
++	phy_ge2: ethernet-phy@c {
++		compatible = "ethernet-phy-ieee802.3-c22";
++		reg = <0xc>;
++	};
++
++	phy_ge3: ethernet-phy@d {
++		compatible = "ethernet-phy-ieee802.3-c22";
++		reg = <0xd>;
++	};
++};
+-- 
+2.39.5

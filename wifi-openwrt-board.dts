@@ -1,0 +1,13 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * OpenWrt view of the ZXHN F7615MV30 flash.
+ *
+ * The board DTS in the kernel tree (zte/zx279133-f7615mv30.dts) already
+ * marks the vendor-owned partitions (u-boot, others, "parameter tags")
+ * read-only and hands "kernel" + "ubi" to OpenWrt, which keeps its
+ * rootfs in the UBI volume. Nothing to override here yet; this file
+ * exists so the target's per-device DTS build path has an OpenWrt-side
+ * entry point, mirroring zx279133-sr1010-openwrt.dts.
+ */
+
+#include "zte/zx279133-f7615mv30.dts"
