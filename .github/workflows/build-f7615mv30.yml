@@ -83,9 +83,6 @@ jobs:
           cp extracted_npu.ko openwrt/target/linux/zte/zx279133/base-files/lib/modules/7.3.4/npu.ko
           mkdir -p openwrt/target/linux/zte/zx279133/base-files/etc/modules.d
           printf 'npu\n' > openwrt/target/linux/zte/zx279133/base-files/etc/modules.d/30-zte-npu
-      - name: Disable linux-atm package
-        run: |
-          printf '# disabled for F7615MV30' > openwrt/package/network/utils/linux-atm/Makefile
       - name: Adjust SK-D840N theme pins for this board
         run: |
           sh scripts/prepare-sk-d840n-ui.sh "$GITHUB_WORKSPACE/openwrt"
@@ -114,6 +111,7 @@ jobs:
           # CONFIG_MODULE_SIG_FORCE is not set
           EOF
           cd openwrt && make defconfig
+          echo '# CONFIG_PACKAGE_linux-atm is not set' >> .config
           for n in libzxpon-omci zxpond luci-app-sk-d840n-pon sk-layout-check zrec linux-atm; do
             sed -i "/^CONFIG_PACKAGE_$n=/d" .config
           done
