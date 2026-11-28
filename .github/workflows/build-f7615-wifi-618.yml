@@ -1,0 +1,99 @@
+name: F7615MV30 WiFi build (6.18 line)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      KERNEL_TREE: ${{ github.workspace }}/linux-mainline-zte-zxslc-sr1010/linux-6.18.38
+      IW_URL: https://github.com/cnjn/ImmortalWrt
+      IW_BRANCH: sr1010-zx279133
+      IW_SHA: 1b50aaf4ed9cf042df6207564555b244d6ced517
+      KERNEL_URL: https://github.com/cnjn/linux-mainline-zte-zxslc-sr1010
+      KERNEL_BRANCH: build
+      KERNEL_SHA: 96e5a2413524742e177e383fe523ef21de5ed238
+      KVER: '6.18.60'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential clang flex bison gawk \
+            gettext git libncurses-dev libssl-dev python3 python3-setuptools \
+            rsync swig unzip zlib1g-dev file wget cpio xz-utils
+
+      - name: Clone ImmortalWrt (6.18 target)
+        run: |
+          git clone --depth 1 -b "$IW_BRANCH" "$IW_URL" openwrt
+          git -C openwrt fetch --depth 1 origin "$IW_SHA"
+          git -C openwrt checkout --detach "$IW_SHA"
+
+      - name: Clone ZX279133 6.18 kernel tree
+        run: |
+          mkdir -p linux-mainline-zte-zxslc-sr1010
+          git clone --depth 1 -b "$KERNEL_BRANCH" "$KERNEL_URL" linux-mainline-zte-zxslc-sr1010/linux-6.18.38
+          git -C "$KERNEL_TREE" fetch --depth 1 origin "$KERNEL_SHA"
+          git -C "$KERNEL_TREE" checkout --detach "$KERNEL_SHA"
+
+      - name: Install feeds
+        working-directory: openwrt
+        run: |
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: Prepare pinned 6.18.60 kernel
+        run: |
+          python3 tools/prepare-sk-kernel.py \
+            --tree "$KERNEL_TREE" --version "$KVER" \
+            --openwrt "$GITHUB_WORKSPACE/openwrt"
+
+      - name: Apply 6.18 board overlays
+        run: |
+          cp -a kernel-overlays/. "$KERNEL_TREE"/
+          cp -a overlays/. openwrt/
+
+      - name: Apply F7615MV30 PCIe/MSI/board patches
+        run: |
+          for p in wifi-470-pci-host.patch wifi-480-dts-pcie-msi.patch wifi-490-dts-board.patch; do
+            patch -d "$KERNEL_TREE" -p1 < "$p"
+          done
+
+      - name: Add OpenWrt device profile and kernel config
+        run: |
+          cp wifi-openwrt-board.dts openwrt/target/linux/zte/dts/
+          patch -d openwrt -p1 < wifi-image-Makefile.patch
+          python3 - <<'PY'
+          p = "openwrt/target/linux/zte/zx279133/config-6.18"
+          s = open(p).read()
+          s = s.replace("# CONFIG_PCI is not set", "CONFIG_PCI=y")
+          if "CONFIG_PCI_MSI_IRQ_DOMAIN" not in s:
+              s += "\nCONFIG_PCI_MSI_IRQ_DOMAIN=y\nCONFIG_PCIE_ZX279133_HOST=y\n"
+          open(p, "w").write(s)
+          PY
+
+      - name: Configure
+        run: |
+          cp openwrt/configs/zte_zx279133_sr1010_initramfs.config openwrt/.config
+          echo 'CONFIG_TARGET_zte_zx279133_DEVICE_zte_zxhn-f7615mv30=y' >> openwrt/.config
+          echo '# CONFIG_TARGET_zte_zx279133_DEVICE_zte_zxslc-sr1010 is not set' >> openwrt/.config
+          printf 'CONFIG_EXTERNAL_KERNEL_TREE="%s"\n' "$KERNEL_TREE" >> openwrt/.config
+          cd openwrt && make defconfig
+
+      - name: Download packages
+        working-directory: openwrt
+        run: make download -j8 || make download -j1
+
+      - name: Compile
+        working-directory: openwrt
+        run: make -j"$(nproc)" V=s
+
+      - name: Upload images
+        uses: actions/upload-artifact@v4
+        with:
+          name: f7615mv30-wifi-618-images
+          path: openwrt/bin/targets/zte/zx279133/*
+          if-no-files-found: warn
