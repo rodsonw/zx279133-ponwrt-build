@@ -79,6 +79,7 @@ jobs:
         run: |
           mkdir -p "$KERNEL_TREE/firmware/zte/zx279133"
           cp overlays/target/linux/zte/zx279133/firmware/zte/zx279133/mcode_intel.bin "$KERNEL_TREE/firmware/zte/zx279133/mcode_intel.bin"
+          sed -i "s|^CONFIG_EXTRA_FIRMWARE_DIR=.*|CONFIG_EXTRA_FIRMWARE_DIR="$GITHUB_WORKSPACE/openwrt/target/linux/zte/zx279133/firmware"|" openwrt/target/linux/zte/zx279133/config-6.18
           mkdir -p openwrt/target/linux/zte/zx279133/firmware/zte/zx279133
           cp overlays/target/linux/zte/zx279133/firmware/zte/zx279133/mcode_intel.bin openwrt/target/linux/zte/zx279133/firmware/zte/zx279133/mcode_intel.bin
       - name: Configure
