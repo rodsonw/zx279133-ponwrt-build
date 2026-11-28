@@ -39,6 +39,9 @@ jobs:
             --openwrt "$GITHUB_WORKSPACE/openwrt" \
             --report kernel-provenance.json
 
+      - name: Apply 7.3 board overlays
+        run: cp -a kernel-overlays-73/. "$KERNEL_TREE"/
+
       - name: Apply F7615MV30 PCIe/MSI/board patches
         run: |
           for p in wifi-470-pci-host.patch wifi-480-dts-pcie-msi.patch wifi-490-dts-board.patch; do
