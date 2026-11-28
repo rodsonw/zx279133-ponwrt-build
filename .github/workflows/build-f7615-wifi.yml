@@ -60,6 +60,10 @@ jobs:
           open(p, "w").write(s)
           PY
 
+      - name: Install NPU microcode
+        run: |
+          mkdir -p "$KERNEL_TREE/firmware/zte/zx279133"
+          cp overlays-73/target/linux/zte/zx279133/firmware/zte/zx279133/mcode_intel.bin "$KERNEL_TREE/firmware/zte/zx279133/mcode_intel.bin"
       - name: Configure
         run: |
           cp openwrt/configs/zte_zx279133_sr1010_initramfs.config openwrt/.config
